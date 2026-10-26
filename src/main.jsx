@@ -565,13 +565,23 @@ function App() {
 
   function verifyAdminPin(event) {
     event.preventDefault();
+    const enteredPin = adminPinInput.trim();
 
     if (!effectiveAdminPin) {
-      setAdminPinError("Admin PIN is not configured in the environment file.");
+      if (enteredPin.length < 6) {
+        setAdminPinError("Create a PIN with at least 6 characters.");
+        return;
+      }
+
+      saveSettings({ ...appSettings, adminPin: enteredPin });
+      setAdminUnlocked(true);
+      setActivePage(adminPinModal?.targetPage ?? "master");
+      closeAdminPinModal();
+      pushToast("success", "Master Data PIN created and saved in this browser.");
       return;
     }
 
-    if (adminPinInput.trim() !== effectiveAdminPin) {
+    if (enteredPin !== effectiveAdminPin) {
       setAdminPinError("Incorrect Admin PIN. Access denied.");
       return;
     }
@@ -1481,6 +1491,7 @@ function App() {
         <AdminPinModal
           adminPinError={adminPinError}
           adminPinInput={adminPinInput}
+          setupRequired={!effectiveAdminPin}
           onCancel={closeAdminPinModal}
           onSubmit={verifyAdminPin}
           setAdminPinInput={setAdminPinInput}
@@ -1639,6 +1650,7 @@ function AdminLockedPanel({ onUnlock }) {
 function AdminPinModal({
   adminPinError,
   adminPinInput,
+  setupRequired,
   onCancel,
   onSubmit,
   setAdminPinInput
@@ -1649,7 +1661,7 @@ function AdminPinModal({
         <div className="modal-header">
           <div>
             <p className="eyebrow">Administrator Verification</p>
-            <h2 id="admin-pin-title">Enter Admin PIN</h2>
+            <h2 id="admin-pin-title">{setupRequired ? "Create Master Data PIN" : "Enter Admin PIN"}</h2>
           </div>
           <button className="modal-close" onClick={onCancel} type="button" aria-label="Close admin PIN">
             <X size={18} />
@@ -1658,14 +1670,14 @@ function AdminPinModal({
 
         <form className="admin-pin-form" onSubmit={onSubmit}>
           <label>
-            Admin PIN
+            {setupRequired ? "Create a PIN (at least 6 characters)" : "Admin PIN"}
             <input
               autoFocus
               inputMode="numeric"
               type="password"
               value={adminPinInput}
               onChange={(event) => setAdminPinInput(event.target.value)}
-              placeholder="Enter PIN"
+              placeholder={setupRequired ? "Create PIN" : "Enter PIN"}
             />
           </label>
 
@@ -1677,7 +1689,7 @@ function AdminPinModal({
             </button>
             <button className="complete-button" type="submit">
               <ShieldCheck size={18} />
-              Unlock
+              {setupRequired ? "Save PIN and continue" : "Unlock"}
             </button>
           </div>
         </form>
