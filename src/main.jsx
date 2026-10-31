@@ -127,10 +127,15 @@ function App() {
   const [activePage, setActivePage] = useState("dashboard");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [dashboard, setDashboard] = useState(null);
   const [today, setToday] = useState(null);
   const [summary, setSummary] = useState([]);
   const [inventory, setInventory] = useState([]);
+  const [borrowSessions, setBorrowSessions] = useState([]);
+  const [sessionsError, setSessionsError] = useState("");
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [serviceabilityFilter, setServiceabilityFilter] = useState("all");
+  const [availabilityFilter, setAvailabilityFilter] = useState("all");
+  const [historyFilter, setHistoryFilter] = useState("all");
   const [notAvailable, setNotAvailable] = useState([]);
   const [todayList, setTodayList] = useState([]);
   const [historyRows, setHistoryRows] = useState([]);
@@ -210,8 +215,25 @@ function App() {
   const scannerActiveRef = useRef(scannerActive);
   const scanBusyRef = useRef(scanBusy);
 
-  const unavailableCount = dashboard?.not_available_tools ?? 0;
-  const totalTools = dashboard?.total_tools ?? 0;
+  const totalTools = inventory.length;
+  const serviceableTools = inventory.filter((tool) => tool.status !== "Unserviceable");
+  const controlledOutTools = inventory.filter((tool) => tool.status === "Not Available" && tool.availability_reason === "Borrowed");
+  const activeIssueSessions = borrowSessions.filter((session) => session.status === "Active" && !session.returned_at);
+  const activeIssueCount = sessionsError ? null : activeIssueSessions.length;
+  const filteredInventory = useMemo(() => {
+    const query = inventorySearch.trim().toLowerCase();
+    return inventory.filter((tool) => {
+      const matchesQuery = !query || [tool.tool_name, tool.tool_code, tool.uid]
+        .some((value) => String(value ?? "").toLowerCase().includes(query));
+      const matchesServiceability = serviceabilityFilter === "all" ||
+        (serviceabilityFilter === "serviceable" ? tool.status !== "Unserviceable" : tool.status === "Unserviceable");
+      const matchesAvailability = availabilityFilter === "all" ||
+        (availabilityFilter === "available" ? tool.status === "Available" :
+          availabilityFilter === "borrowed" ? tool.status === "Not Available" && tool.availability_reason === "Borrowed" :
+            tool.status === "Not Available" && tool.availability_reason !== "Borrowed");
+      return matchesQuery && matchesServiceability && matchesAvailability;
+    });
+  }, [availabilityFilter, inventory, inventorySearch, serviceabilityFilter]);
   const workshopName = appSettings.workshopName.trim() || DEFAULT_WORKSHOP_NAME;
   const effectiveAdminPin = appSettings.adminPin || ADMIN_PIN;
   const adminDisplayName = getDisplayName(adminUser?.email);
@@ -501,25 +523,24 @@ function App() {
     setError("");
 
     const [
-      dashboardResult,
       todayResult,
       summaryResult,
       inventoryResult,
       notAvailableResult,
       todayListResult,
-      historyResult
+      historyResult,
+      sessionsResult
     ] = await Promise.all([
-      supabase.from("dashboard_stats").select("*").single(),
       supabase.from("today_dashboard_stats").select("*").single(),
       supabase.from("tool_summary").select("*"),
       supabase.from("tools").select("*").order("tool_name").order("tool_code"),
       supabase.from("current_not_available_tools").select("*"),
       supabase.from("today_borrow_list").select("*"),
-      supabase.from("borrow_history").select("*").order("created_at", { ascending: false }).limit(80)
+      supabase.from("borrow_history").select("*").order("created_at", { ascending: false }).limit(80),
+      supabase.from("borrow_sessions").select("*").order("borrowed_at", { ascending: false })
     ]);
 
     const firstError =
-      dashboardResult.error ||
       todayResult.error ||
       summaryResult.error ||
       inventoryResult.error ||
@@ -530,13 +551,14 @@ function App() {
     if (firstError) {
       setError(firstError.message);
     } else {
-      setDashboard(dashboardResult.data);
       setToday(todayResult.data);
       setSummary(summaryResult.data ?? []);
       setInventory(inventoryResult.data ?? []);
       setNotAvailable(notAvailableResult.data ?? []);
       setTodayList(todayListResult.data ?? []);
       setHistoryRows(historyResult.data ?? []);
+      setBorrowSessions(sessionsResult.data ?? []);
+      setSessionsError(sessionsResult.error?.message ?? "");
       setLastUpdated(new Date());
     }
 
@@ -607,7 +629,20 @@ function App() {
       return;
     }
 
+    if (pageId === "history") setHistoryFilter("all");
     setActivePage(pageId);
+  }
+
+  function openInventoryFilter(filter) {
+    setInventorySearch("");
+    setServiceabilityFilter(filter === "serviceable" ? "serviceable" : "all");
+    setAvailabilityFilter(filter === "borrowed" ? "borrowed" : "all");
+    setActivePage("inventory");
+  }
+
+  function openActiveIssueRecords() {
+    setHistoryFilter("active");
+    setActivePage("history");
   }
 
   async function findToolByUid(event) {
@@ -1232,7 +1267,21 @@ function App() {
     }
 
     if (activePage === "inventory") {
-      return <InventoryTable onOpenTool={openToolDetail} overdueDays={appSettings.overdueDays} rows={inventory} />;
+      return (
+        <InventoryTable
+          availabilityFilter={availabilityFilter}
+          inventorySearch={inventorySearch}
+          onAvailabilityFilterChange={setAvailabilityFilter}
+          onClearFilters={() => { setServiceabilityFilter("all"); setAvailabilityFilter("all"); }}
+          onOpenTool={openToolDetail}
+          onSearchChange={setInventorySearch}
+          onServiceabilityFilterChange={setServiceabilityFilter}
+          overdueDays={appSettings.overdueDays}
+          rows={filteredInventory}
+          serviceabilityFilter={serviceabilityFilter}
+          totalRows={inventory.length}
+        />
+      );
     }
 
     if (activePage === "master") {
@@ -1263,7 +1312,7 @@ function App() {
     }
 
     if (activePage === "history") {
-      return <HistoryPage historyRows={historyRows} inventory={inventory} onOpenTool={openToolDetail} overdueDays={appSettings.overdueDays} todayList={todayList} />;
+      return <HistoryPage activeIssueSessions={activeIssueSessions} dataError={sessionsError} filter={historyFilter} historyRows={historyRows} inventory={inventory} onOpenTool={openToolDetail} overdueDays={appSettings.overdueDays} todayList={todayList} />;
     }
 
     if (activePage === "settings") {
@@ -1291,7 +1340,16 @@ function App() {
 
     return (
       <>
-        <StatsGrid dashboard={dashboard} totalTools={totalTools} unavailableCount={unavailableCount} />
+        <StatsGrid
+          controlledOutCount={controlledOutTools.length}
+          activeIssueCount={activeIssueCount}
+          onActiveIssues={() => openActiveIssueRecords()}
+          onControlledOut={() => openInventoryFilter("borrowed")}
+          onServiceable={() => openInventoryFilter("serviceable")}
+          onTotalTools={() => openInventoryFilter("all")}
+          serviceableCount={serviceableTools.length}
+          totalTools={totalTools}
+        />
         <section className="dashboard-grid">
           <CheckoutPanel
             checkout={checkout}
@@ -1698,38 +1756,42 @@ function AdminPinModal({
   );
 }
 
-function StatsGrid({ dashboard, totalTools, unavailableCount }) {
+function StatsGrid({ activeIssueCount, controlledOutCount, onActiveIssues, onControlledOut, onServiceable, onTotalTools, serviceableCount, totalTools }) {
   return (
     <section className="stats-grid">
       <StatCard
         icon={Wrench}
         label="Total Tools"
+        onClick={onTotalTools}
         progress={100}
         subtitle="Current Inventory Status"
-        value={dashboard?.total_tools}
+        value={totalTools}
       />
       <StatCard
         icon={PackageCheck}
         label="Serviceable"
-        progress={totalTools ? ((dashboard?.available_tools ?? 0) / totalTools) * 100 : 0}
+        onClick={onServiceable}
+        progress={totalTools ? (serviceableCount / totalTools) * 100 : 0}
         subtitle="Current Inventory Status"
-        value={dashboard?.available_tools}
+        value={serviceableCount}
         tone="good"
       />
       <StatCard
         icon={PackageX}
         label="Controlled Out"
-        progress={totalTools ? (unavailableCount / totalTools) * 100 : 0}
+        onClick={onControlledOut}
+        progress={totalTools ? (controlledOutCount / totalTools) * 100 : 0}
         subtitle="Current Inventory Status"
-        value={unavailableCount}
-        tone={unavailableCount > 0 ? "warn" : "good"}
+        value={controlledOutCount}
+        tone={controlledOutCount > 0 ? "warn" : "good"}
       />
       <StatCard
         icon={ClipboardCheck}
         label="Active Issue Records"
-        progress={totalTools ? ((dashboard?.active_sessions ?? 0) / totalTools) * 100 : 0}
+        onClick={onActiveIssues}
+        progress={totalTools ? ((activeIssueCount ?? 0) / totalTools) * 100 : 0}
         subtitle="Current Inventory Status"
-        value={dashboard?.active_sessions}
+        value={activeIssueCount}
       />
     </section>
   );
@@ -2074,11 +2136,11 @@ function TodayPanel({ filteredTodayList, today }) {
   );
 }
 
-function StatCard({ icon: Icon, label, progress = 0, subtitle, value, tone = "neutral" }) {
+function StatCard({ icon: Icon, label, onClick, progress = 0, subtitle, value, tone = "neutral" }) {
   const safeProgress = Math.max(0, Math.min(100, progress));
 
   return (
-    <article className={`stat-card ${tone}`}>
+    <button aria-label={`${label}: ${value ?? "unavailable"}. Open ${label} view`} className={`stat-card ${tone}`} onClick={onClick} type="button">
       <div className="stat-card-top">
         <Icon size={22} />
         <span>{label}</span>
@@ -2088,7 +2150,7 @@ function StatCard({ icon: Icon, label, progress = 0, subtitle, value, tone = "ne
       <div className="stat-progress" aria-hidden="true">
         <span style={{ width: `${safeProgress}%` }} />
       </div>
-    </article>
+    </button>
   );
 }
 
@@ -2139,7 +2201,8 @@ function EmptyState({ message, factIndex = 0 }) {
   );
 }
 
-function InventoryTable({ onOpenTool, overdueDays, rows }) {
+function InventoryTable({ availabilityFilter, inventorySearch, onAvailabilityFilterChange, onClearFilters, onOpenTool, onSearchChange, onServiceabilityFilterChange, overdueDays, rows, serviceabilityFilter, totalRows }) {
+  const filtersActive = serviceabilityFilter !== "all" || availabilityFilter !== "all";
   return (
     <section className="table-card page-panel">
       <div className="section-heading">
@@ -2149,6 +2212,32 @@ function InventoryTable({ onOpenTool, overdueDays, rows }) {
           <p>Each record represents one physical tool assigned to an NFC UID.</p>
         </div>
       </div>
+      <div className="inventory-controls">
+        <label className="inventory-search">
+          Search tools
+          <input aria-label="Search by tool name, tool code, or UID" onChange={(event) => onSearchChange(event.target.value)} placeholder="Name, Tool ID/code, or UID" type="search" value={inventorySearch} />
+        </label>
+        <label>
+          Serviceability
+          <select onChange={(event) => onServiceabilityFilterChange(event.target.value)} value={serviceabilityFilter}>
+            <option value="all">All serviceability</option>
+            <option value="serviceable">Serviceable (not marked Unserviceable)</option>
+            <option value="unserviceable">Unserviceable</option>
+          </select>
+        </label>
+        <label>
+          Availability / issue status
+          <select onChange={(event) => onAvailabilityFilterChange(event.target.value)} value={availabilityFilter}>
+            <option value="all">All availability</option>
+            <option value="available">Available</option>
+            <option value="borrowed">Checked out</option>
+            <option value="other">Other not available</option>
+          </select>
+        </label>
+        {filtersActive && <button className="secondary-button clear-filter-button" onClick={onClearFilters} type="button">Clear filters</button>}
+        <span className="inventory-result-count">Showing {rows.length} of {totalRows}</span>
+      </div>
+      {filtersActive && <p className="active-filter-note">Active filter: {serviceabilityFilter !== "all" ? (serviceabilityFilter === "serviceable" ? "Serviceable" : "Unserviceable") : "All serviceability"}{availabilityFilter !== "all" ? ` · ${availabilityFilter === "borrowed" ? "Checked out" : availabilityFilter === "available" ? "Available" : "Other not available"}` : ""}</p>}
       <div className="table-wrap">
         <table>
           <thead>
@@ -2174,7 +2263,7 @@ function InventoryTable({ onOpenTool, overdueDays, rows }) {
                 <td>{formatDate(tool.borrowed_at)}</td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td className="empty-cell" colSpan="7"><EmptyState message="No tools have been registered yet." /></td></tr>}
+            {rows.length === 0 && <tr><td className="empty-cell" colSpan="7"><EmptyState message={totalRows === 0 ? "No tools have been registered yet." : "No tools match these search and filter settings."} /></td></tr>}
           </tbody>
         </table>
       </div>
@@ -2312,18 +2401,40 @@ function InventoryManager({
   );
 }
 
-function HistoryPage({ historyRows, inventory, onOpenTool, overdueDays, todayList }) {
+function HistoryPage({ activeIssueSessions, dataError, filter, historyRows, inventory, onOpenTool, overdueDays, todayList }) {
   const toolsByUid = new Map(inventory.map((tool) => [tool.uid, tool]));
   return (
     <section className="table-card page-panel">
       <div className="section-heading">
         <ClipboardList size={20} />
         <div>
-          <h2>Borrow & Return History</h2>
-          <p>Operational movement records from checkout and return workflows.</p>
+          <h2>{filter === "active" ? "Active Issue Records" : "Borrow & Return History"}</h2>
+          <p>{filter === "active" ? "Borrow sessions still marked Active and not yet returned." : "Operational movement records from checkout and return workflows."}</p>
         </div>
       </div>
 
+      {filter === "active" ? (
+        dataError ? <p className="helper-text danger-text">Could not load active issue records: {dataError}</p> :
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Session</th><th>Borrower</th><th>Student ID</th><th>Workshop</th><th>Issued At</th><th>Status</th></tr></thead>
+            <tbody>
+              {activeIssueSessions.map((session) => (
+                <tr key={session.id}>
+                  <td className="mono">{session.id}</td>
+                  <td>{session.borrower_name || "-"}</td>
+                  <td>{session.borrower_id || "-"}</td>
+                  <td>{session.workshop || "-"}</td>
+                  <td>{formatDate(session.borrowed_at)}</td>
+                  <td><StatusBadge status={session.status} /></td>
+                </tr>
+              ))}
+              {activeIssueSessions.length === 0 && <tr><td className="empty-cell" colSpan="6"><EmptyState message="There are no active issue records." /></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+      <>
       <div className="table-wrap">
         <table>
           <thead>
@@ -2370,6 +2481,8 @@ function HistoryPage({ historyRows, inventory, onOpenTool, overdueDays, todayLis
           ))}
         </div>
       </div>
+      </>
+      )}
     </section>
   );
 }
