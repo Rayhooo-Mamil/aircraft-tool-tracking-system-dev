@@ -1031,6 +1031,14 @@ label select {
 .tool-detail-modal { width: min(660px, calc(100vw - 32px)); }
 .tool-detail-summary { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
 .tool-detail-summary p { margin: 0 0 5px; }
+.tool-detail-image-button { flex: 0 0 auto; padding: 0; border: 0; border-radius: 10px; background: transparent; cursor: zoom-in; }
+.tool-detail-image-button .tool-thumbnail { width: 72px; height: 72px; }
+.tool-detail-image-button:focus-visible { outline: 3px solid var(--aviation-green); outline-offset: 3px; }
+.tool-photo-lightbox { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 24px; background: rgba(8, 17, 16, 0.88); backdrop-filter: blur(5px); }
+.tool-photo-lightbox-card { position: relative; display: grid; justify-items: center; gap: 10px; max-width: 96vw; max-height: 94vh; padding: 48px 16px 14px; overflow: auto; border: 1px solid #cbdad6; border-radius: 14px; background: #ffffff; box-shadow: 0 28px 70px rgba(0, 0, 0, 0.4); }
+.tool-photo-lightbox-card img { display: block; max-width: calc(96vw - 32px); max-height: calc(94vh - 82px); object-fit: contain; }
+.tool-photo-lightbox-card p { margin: 0; color: var(--aircraft-navy); font-weight: 700; text-align: center; }
+.tool-photo-lightbox-close { position: absolute; top: 8px; right: 8px; z-index: 1; }
 .tool-detail-data { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 0 20px; }
 .tool-detail-data div { padding: 10px; border: 1px solid #d4dedb; border-radius: 8px; background: #f8fbfa; }
 .tool-detail-data dt { color: #60706c; font-size: 0.78rem; }
@@ -1970,6 +1978,10 @@ th {
     padding: 16px;
     border-radius: 18px 18px 12px 12px;
   }
+
+  .tool-photo-lightbox { padding: 12px; }
+  .tool-photo-lightbox-card { max-width: 100%; max-height: 96dvh; padding: 46px 10px 12px; }
+  .tool-photo-lightbox-card img { max-width: calc(100vw - 44px); max-height: calc(96dvh - 76px); }
 
   .modal-actions {
     gap: 8px;

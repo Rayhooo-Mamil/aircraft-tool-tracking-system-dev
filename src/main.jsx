@@ -2677,43 +2677,87 @@ function CheckoutConfirmModal({ checkout, checkoutItems, checkoutSaving, onCance
 }
 
 function ToolDetailModal({ historyRows, loading, onClose, overdue, tool }) {
+  const [imageOpen, setImageOpen] = useState(false);
+
+  useEffect(() => {
+    if (!imageOpen) return undefined;
+
+    function closeImageOnEscape(event) {
+      if (event.key === "Escape") setImageOpen(false);
+    }
+
+    window.addEventListener("keydown", closeImageOnEscape);
+    return () => window.removeEventListener("keydown", closeImageOnEscape);
+  }, [imageOpen]);
+
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="modal-card tool-detail-modal" role="dialog" aria-modal="true" aria-labelledby="tool-detail-title">
-        <div className="modal-header">
-          <div>
-            <p className="eyebrow">Tool Detail</p>
-            <h2 id="tool-detail-title">{tool.tool_name}</h2>
-          </div>
-          <button className="modal-close" onClick={onClose} type="button" aria-label="Close tool detail"><X size={18} /></button>
-        </div>
-        <div className="tool-detail-summary">
-          <ToolThumbnail imageUrl={tool.image_url} name={tool.tool_name} />
-          <div>
-            <p className="tool-code">{tool.tool_code}</p>
-            <p className="mono">UID {tool.uid}</p>
-            <StatusBadge reason={tool.availability_reason} status={tool.status} />
-            {overdue && <span className="overdue-badge">Overdue return</span>}
-          </div>
-        </div>
-        <dl className="tool-detail-data">
-          <div><dt>Current borrower</dt><dd>{tool.current_borrower || "No active borrower"}</dd></div>
-          <div><dt>Borrowed at</dt><dd>{formatDate(tool.borrowed_at)}</dd></div>
-          <div><dt>Workshop</dt><dd>{tool.workshop || "Not recorded"}</dd></div>
-        </dl>
-        <div className="detail-history">
-          <h3>Tool Movement History</h3>
-          {loading && <p className="helper-text">Loading tool history…</p>}
-          {!loading && historyRows.length === 0 && <EmptyState message="No movement history for this tool." factIndex={1} />}
-          {!loading && historyRows.map((row) => (
-            <div className="detail-history-row" key={row.id}>
-              <span className={row.action === "Returned" ? "return-dot" : "borrow-dot"} />
-              <div><strong>{row.action}</strong><span>{row.borrower_name || "Unknown borrower"} · {formatDate(row.returned_at || row.borrowed_at || row.created_at)}</span></div>
+    <>
+      <div className="modal-backdrop" role="presentation">
+        <section className="modal-card tool-detail-modal" role="dialog" aria-modal="true" aria-labelledby="tool-detail-title">
+          <div className="modal-header">
+            <div>
+              <p className="eyebrow">Tool Detail</p>
+              <h2 id="tool-detail-title">{tool.tool_name}</h2>
             </div>
-          ))}
+            <button className="modal-close" onClick={onClose} type="button" aria-label="Close tool detail"><X size={18} /></button>
+          </div>
+          <div className="tool-detail-summary">
+            {tool.image_url ? (
+              <button
+                className="tool-detail-image-button"
+                onClick={() => setImageOpen(true)}
+                type="button"
+                aria-label={`Enlarge ${tool.tool_name} photo`}
+                title="Click to enlarge photo"
+              >
+                <ToolThumbnail imageUrl={tool.image_url} name={tool.tool_name} />
+              </button>
+            ) : (
+              <ToolThumbnail imageUrl={tool.image_url} name={tool.tool_name} />
+            )}
+            <div>
+              <p className="tool-code">{tool.tool_code}</p>
+              <p className="mono">UID {tool.uid}</p>
+              <StatusBadge reason={tool.availability_reason} status={tool.status} />
+              {overdue && <span className="overdue-badge">Overdue return</span>}
+            </div>
+          </div>
+          <dl className="tool-detail-data">
+            <div><dt>Current borrower</dt><dd>{tool.current_borrower || "No active borrower"}</dd></div>
+            <div><dt>Borrowed at</dt><dd>{formatDate(tool.borrowed_at)}</dd></div>
+            <div><dt>Workshop</dt><dd>{tool.workshop || "Not recorded"}</dd></div>
+          </dl>
+          <div className="detail-history">
+            <h3>Tool Movement History</h3>
+            {loading && <p className="helper-text">Loading tool history…</p>}
+            {!loading && historyRows.length === 0 && <EmptyState message="No movement history for this tool." factIndex={1} />}
+            {!loading && historyRows.map((row) => (
+              <div className="detail-history-row" key={row.id}>
+                <span className={row.action === "Returned" ? "return-dot" : "borrow-dot"} />
+                <div><strong>{row.action}</strong><span>{row.borrower_name || "Unknown borrower"} · {formatDate(row.returned_at || row.borrowed_at || row.created_at)}</span></div>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+      {imageOpen && (
+        <div
+          className="tool-photo-lightbox"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setImageOpen(false);
+          }}
+          role="presentation"
+        >
+          <section className="tool-photo-lightbox-card" role="dialog" aria-modal="true" aria-label={`${tool.tool_name} photo`}>
+            <button className="modal-close tool-photo-lightbox-close" onClick={() => setImageOpen(false)} type="button" aria-label="Close enlarged photo">
+              <X size={20} />
+            </button>
+            <img src={tool.image_url} alt={`${tool.tool_name} (${tool.tool_code})`} />
+            <p>{tool.tool_name} · {tool.tool_code}</p>
+          </section>
         </div>
-      </section>
-    </div>
+      )}
+    </>
   );
 }
 
