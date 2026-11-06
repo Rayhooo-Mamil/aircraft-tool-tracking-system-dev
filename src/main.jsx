@@ -33,6 +33,7 @@ import "./styles.css";
 
 const DEFAULT_WORKSHOP_NAME = "Aircraft Tools Workshop";
 const STATUS_OPTIONS = ["Available", "Not Available", "Unserviceable"];
+const MAX_TOOL_IMAGE_BYTES = 2 * 1024 * 1024;
 const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN;
 const ADMIN_EMAIL = "muzwazir@gmail.com";
 const SETTINGS_STORAGE_KEY = "aircraft-tool-tracker-settings";
@@ -427,8 +428,8 @@ function App() {
       setInventoryMessage("Please select an image file.");
       return;
     }
-    if (file.size > 750000) {
-      setInventoryMessage("Image must be 750 KB or smaller. Use a compressed tool photo.");
+    if (file.size > MAX_TOOL_IMAGE_BYTES) {
+      setInventoryMessage("Image must be 2 MB or smaller. Use a compressed tool photo.");
       return;
     }
     const reader = new FileReader();
