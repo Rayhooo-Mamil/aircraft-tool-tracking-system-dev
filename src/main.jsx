@@ -35,7 +35,6 @@ const DEFAULT_WORKSHOP_NAME = "Aircraft Tools Workshop";
 const STATUS_OPTIONS = ["Available", "Not Available", "Unserviceable"];
 const MAX_TOOL_IMAGE_BYTES = 2 * 1024 * 1024;
 const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN;
-const ADMIN_EMAIL = "muzwazir@gmail.com";
 const SETTINGS_STORAGE_KEY = "aircraft-tool-tracker-settings";
 const DEFAULT_SETTINGS = {
   workshopName: DEFAULT_WORKSHOP_NAME,
@@ -283,10 +282,6 @@ function App() {
   }, [scanBusy]);
 
   useEffect(() => {
-    loadData();
-  }, []);
-
-  useEffect(() => {
     if (!scannerActive) return undefined;
 
     const timer = window.setInterval(() => {
@@ -366,7 +361,7 @@ function App() {
     const [historyResult, sessionsResult, toolsResult] = await Promise.all([
       supabase.from("borrow_history").select("*").order("created_at", { ascending: true }),
       supabase.from("borrow_sessions").select("*"),
-      supabase.from("tools").select("uid, tool_name, tool_code")
+      supabase.from("admin_tools").select("uid, tool_name, tool_code")
     ]);
 
     const exportError = historyResult.error || sessionsResult.error || toolsResult.error;
@@ -451,11 +446,6 @@ function App() {
       return;
     }
 
-    if (email !== ADMIN_EMAIL) {
-      setAdminLogin((current) => ({ ...current, error: "This email is not registered as the system administrator." }));
-      return;
-    }
-
     setAdminLogin((current) => ({ ...current, error: "", saving: true }));
     const { data, error: signInError } = await supabase.auth.signInWithPassword({
       email,
@@ -467,10 +457,27 @@ function App() {
       return;
     }
 
+    const { data: access, error: accessError } = await supabase
+      .from("user_access")
+      .select("role, active")
+      .eq("user_id", data.user.id)
+      .maybeSingle();
+
+    if (accessError || !access?.active || access.role !== "admin") {
+      await supabase.auth.signOut();
+      setAdminLogin((current) => ({
+        ...current,
+        saving: false,
+        error: accessError?.message || "This account is not assigned the Admin role. Contact the system owner."
+      }));
+      return;
+    }
+
     setAdminUser(data.user);
     setAdminLogin((current) => ({ ...current, password: "", saving: false }));
     setAccessMode("admin");
     pushToast("success", "Administrator signed in.");
+    await loadData();
   }
 
   async function signOutAdmin() {
@@ -481,12 +488,7 @@ function App() {
   }
 
   async function enterStudentView() {
-    if (supabaseConfigured) await supabase.auth.signOut();
-    setAdminUser(null);
-    setAdminUnlocked(false);
-    setActivePage("inventory");
-    setAccessMode("student");
-    await loadData();
+    setAccessMode("student-login");
   }
 
   async function signInStudent(event) {
@@ -508,9 +510,47 @@ function App() {
       return;
     }
 
+    const { data: access, error: accessError } = await supabase
+      .from("user_access")
+      .select("role, active")
+      .eq("user_id", data.user.id)
+      .maybeSingle();
+
+    if (accessError || !access?.active || access.role !== "student") {
+      await supabase.auth.signOut();
+      setStudentLogin((current) => ({
+        ...current,
+        saving: false,
+        error: accessError?.message || "This account is not assigned the Student role. Use the correct sign-in option or contact the system owner."
+      }));
+      return;
+    }
+
+    setAdminUser(data.user);
     setStudentLogin((current) => ({ ...current, password: "", saving: false }));
     setActivePage("inventory");
     setAccessMode("student");
+    await loadStudentInventory();
+  }
+
+  async function loadStudentInventory() {
+    if (!supabaseConfigured) {
+      setLoading(false);
+      setError("Supabase is not connected yet.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    const { data, error: inventoryError } = await supabase
+      .from("student_tool_inventory")
+      .select("uid, tool_name, tool_code, status, availability_reason")
+      .order("tool_name")
+      .order("tool_code");
+
+    if (inventoryError) setError(inventoryError.message);
+    else setInventory(data ?? []);
+    setLoading(false);
   }
 
   async function loadData() {
@@ -534,7 +574,7 @@ function App() {
     ] = await Promise.all([
       supabase.from("today_dashboard_stats").select("*").single(),
       supabase.from("tool_summary").select("*"),
-      supabase.from("tools").select("*").order("tool_name").order("tool_code"),
+      supabase.from("admin_tools").select("*").order("tool_name").order("tool_code"),
       supabase.from("current_not_available_tools").select("*"),
       supabase.from("today_borrow_list").select("*"),
       supabase.from("borrow_history").select("*").order("created_at", { ascending: false }).limit(80),
@@ -660,7 +700,7 @@ function App() {
     setUidResult(null);
 
     const { data, error: lookupError } = await supabase
-      .from("tools")
+      .from("admin_tools")
       .select("*")
       .eq("uid", uid)
       .maybeSingle();
@@ -695,7 +735,7 @@ function App() {
     }
 
     const { data, error: lookupError } = await supabase
-      .from("tools")
+      .from("admin_tools")
       .select("*")
       .eq("uid", cleanUid)
       .maybeSingle();
@@ -1067,7 +1107,7 @@ function App() {
       if (!sessionToolsError) {
         const sessionToolUids = [...new Set((sessionTools ?? []).map((item) => item.tool_uid))];
         const { data: openTools } = await supabase
-          .from("tools")
+          .from("admin_tools")
           .select("uid")
           .in("uid", sessionToolUids)
           .eq("status", "Not Available")
@@ -1593,7 +1633,7 @@ function AdminSignIn({ login, onBack, onChange, onSubmit }) {
         <ShieldCheck className="access-plane" size={38} />
         <p className="eyebrow">Administrator Access</p>
         <h1>Sign in securely</h1>
-        <p className="subtitle">Only the authorised administrator can access operational controls.</p>
+        <p className="subtitle">Sign in with an account assigned the Admin role.</p>
         <form className="access-form" onSubmit={onSubmit}>
           <label>Email<input autoComplete="email" onChange={(event) => onChange("email", event.target.value)} type="email" value={login.email} /></label>
           <label>Password<input autoComplete="current-password" onChange={(event) => onChange("password", event.target.value)} type="password" value={login.password} /></label>
@@ -1615,7 +1655,7 @@ function StudentSignIn({ login, onBack, onChange, onSubmit }) {
         <Eye className="access-plane" size={38} />
         <p className="eyebrow">Student Access - Read Only</p>
         <h1>Sign in to view tools</h1>
-        <p className="subtitle">Your account can view current tool availability but cannot change any record.</p>
+        <p className="subtitle">Sign in with your Supabase account to view current tool availability.</p>
         <form className="access-form" onSubmit={onSubmit}>
           <label>Email<input autoComplete="email" onChange={(event) => onChange("email", event.target.value)} type="email" value={login.email} /></label>
           <label>Password<input autoComplete="current-password" onChange={(event) => onChange("password", event.target.value)} type="password" value={login.password} /></label>
