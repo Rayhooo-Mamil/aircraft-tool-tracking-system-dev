@@ -198,7 +198,7 @@ function App() {
   const [accessMode, setAccessMode] = useState(null);
   const [adminUser, setAdminUser] = useState(null);
   const [adminLogin, setAdminLogin] = useState({
-    email: ADMIN_EMAIL,
+    email: "",
     password: "",
     error: "",
     saving: false
