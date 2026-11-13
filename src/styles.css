@@ -1499,7 +1499,11 @@ th {
 .manual-tool-row span {
   display: grid;
   gap: 3px;
+  flex: 1;
+  min-width: 0;
 }
+
+.manual-tool-row .tool-thumbnail { flex: 0 0 34px; }
 
 .manual-tool-row small {
   color: #60706c;

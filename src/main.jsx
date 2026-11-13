@@ -687,10 +687,16 @@ function App() {
     if (firstError) {
       setError(firstError.message);
     } else {
+      const inventoryRows = inventoryResult.data ?? [];
+      const imageByUid = new Map(inventoryRows.map((tool) => [tool.uid, tool.image_url || null]));
+      const notAvailableRows = (notAvailableResult.data ?? []).map((tool) => ({
+        ...tool,
+        image_url: tool.image_url || imageByUid.get(tool.uid) || null
+      }));
       setToday(todayResult.data);
       setSummary(summaryResult.data ?? []);
-      setInventory(inventoryResult.data ?? []);
-      setNotAvailable(notAvailableResult.data ?? []);
+      setInventory(inventoryRows);
+      setNotAvailable(notAvailableRows);
       setTodayList(todayListResult.data ?? []);
       setHistoryRows(historyResult.data ?? []);
       setBorrowSessions(sessionsResult.data ?? []);
@@ -2905,6 +2911,7 @@ function ManualToolPicker({ onCancel, onSelect, rows }) {
           {visibleTools.length === 0 && <p className="empty">No available tools match your search.</p>}
           {visibleTools.map((tool) => (
             <button className="manual-tool-row" key={tool.uid} onClick={() => onSelect(tool)} type="button">
+              <ToolThumbnail imageUrl={tool.image_url} name={tool.tool_name} size="small" />
               <span><strong>{tool.tool_name}</strong><small>{tool.tool_code}</small></span>
               <BadgePlus size={18} />
             </button>
