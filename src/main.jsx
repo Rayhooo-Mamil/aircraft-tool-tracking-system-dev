@@ -34,6 +34,8 @@ import "./styles.css";
 const DEFAULT_WORKSHOP_NAME = "Aircraft Tools Workshop";
 const STATUS_OPTIONS = ["Available", "Not Available", "Unserviceable"];
 const MAX_TOOL_IMAGE_BYTES = 3.5 * 1024 * 1024;
+const TOOL_IMAGE_BUCKET = "tool-images";
+const signedToolImageCache = new Map();
 const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN;
 const SETTINGS_STORAGE_KEY = "aircraft-tool-tracker-settings";
 const DEFAULT_SETTINGS = {
@@ -51,6 +53,52 @@ const EMPTY_FACTS = [
   "Bluetooth keeps the ESP32 scanner independent from the workshop internet connection.",
   "Good tool control means the right tool is available at the right time."
 ];
+
+function isDirectImageUrl(value) {
+  return typeof value === "string" && /^(data:image\/|https?:\/\/|blob:)/i.test(value);
+}
+
+async function getToolImageUrl(imageRef, forceRefresh = false) {
+  if (!imageRef) return "";
+  if (isDirectImageUrl(imageRef)) return imageRef;
+  if (!supabase) return "";
+
+  const cached = signedToolImageCache.get(imageRef);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached.url;
+
+  const { data, error } = await supabase.storage
+    .from(TOOL_IMAGE_BUCKET)
+    .createSignedUrl(imageRef, 3600);
+  if (error) throw error;
+
+  const result = { url: data.signedUrl, expiresAt: Date.now() + 55 * 60 * 1000 };
+  signedToolImageCache.set(imageRef, result);
+  return result.url;
+}
+
+async function uploadToolImage(file, uid) {
+  const extension = file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "img";
+  const safeUid = uid.replace(/[^a-z0-9_-]/gi, "_");
+  const uniqueName = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const path = `tools/${safeUid}/${uniqueName}.${extension}`;
+  const { data, error } = await supabase.storage
+    .from(TOOL_IMAGE_BUCKET)
+    .upload(path, file, { cacheControl: "3600", contentType: file.type, upsert: false });
+  if (error) throw error;
+  return data.path;
+}
+
+function getStoredToolImagePath(imageRef) {
+  return typeof imageRef === "string" && imageRef.startsWith("tools/") ? imageRef : null;
+}
+
+async function removeStoredToolImage(imageRef) {
+  const path = getStoredToolImagePath(imageRef);
+  if (!path || !supabase) return;
+  const { error } = await supabase.storage.from(TOOL_IMAGE_BUCKET).remove([path]);
+  if (error) console.warn("Could not remove old tool photo from Storage:", error.message);
+  signedToolImageCache.delete(path);
+}
 
 function getSavedSettings() {
   try {
@@ -168,10 +216,12 @@ function App() {
     toolName: "",
     toolCode: "",
     status: "Available",
-    imageUrl: ""
+    imageUrl: "",
+    imageFile: null
   });
   const [inventoryMessage, setInventoryMessage] = useState("");
   const [savingTool, setSavingTool] = useState(false);
+  const [migratingPhotos, setMigratingPhotos] = useState(false);
   const [deletingUid, setDeletingUid] = useState("");
   const [lastUpdated, setLastUpdated] = useState(null);
   const [showCheckoutConfirm, setShowCheckoutConfirm] = useState(false);
@@ -432,11 +482,54 @@ function App() {
     const reader = new FileReader();
     reader.onload = () => {
       const imageUrl = String(reader.result || "");
-      if (target === "new") setNewTool((current) => ({ ...current, imageUrl }));
-      else setEditTool((current) => ({ ...current, imageUrl }));
+      if (target === "new") setNewTool((current) => ({ ...current, imageUrl, imageFile: file }));
+      else setEditTool((current) => ({ ...current, imageUrl, imageFile: file }));
       setInventoryMessage("Tool image ready. Save the tool to keep it.");
     };
     reader.readAsDataURL(file);
+  }
+
+  async function migrateExistingToolPhotos() {
+    const legacyPhotos = inventory.filter((tool) => String(tool.image_url || "").startsWith("data:image/"));
+    if (!legacyPhotos.length || migratingPhotos) return;
+    const confirmed = window.confirm(
+      `Move ${legacyPhotos.length} existing tool photo(s) from the database into the private Supabase Storage bucket? The photos will remain available, and the database will keep only their file paths.`
+    );
+    if (!confirmed) return;
+
+    setMigratingPhotos(true);
+    let moved = 0;
+    const failures = [];
+
+    for (const [index, tool] of legacyPhotos.entries()) {
+      setInventoryMessage(`Moving existing photo ${index + 1} of ${legacyPhotos.length}...`);
+      let storagePath = null;
+      try {
+        const imageResponse = await fetch(tool.image_url);
+        const imageBlob = await imageResponse.blob();
+        const extension = imageBlob.type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "img";
+        const imageFile = new File([imageBlob], `tool-photo.${extension}`, { type: imageBlob.type });
+        storagePath = await uploadToolImage(imageFile, tool.uid);
+
+        const { error } = await supabase
+          .from("tools")
+          .update({ image_url: storagePath })
+          .eq("uid", tool.uid);
+        if (error) throw error;
+        moved += 1;
+      } catch (error) {
+        if (storagePath) await removeStoredToolImage(storagePath);
+        failures.push(`${tool.uid}: ${error.message}`);
+      }
+    }
+
+    setMigratingPhotos(false);
+    await loadData();
+    setInventoryMessage(
+      failures.length
+        ? `Moved ${moved} of ${legacyPhotos.length} photo(s). ${failures.length} failed: ${failures[0]}`
+        : `Moved ${moved} existing photo(s) to Supabase Storage.`
+    );
   }
 
   async function signInAdmin(event) {
@@ -1182,6 +1275,18 @@ function App() {
     setSavingTool(true);
     setInventoryMessage("Adding tool...");
 
+    let imageRef = null;
+    if (newTool.imageFile) {
+      setInventoryMessage("Uploading tool photo...");
+      try {
+        imageRef = await uploadToolImage(newTool.imageFile, uid);
+      } catch (error) {
+        setInventoryMessage(`Photo upload failed: ${error.message}`);
+        setSavingTool(false);
+        return;
+      }
+    }
+
     const { error: insertError } = await supabase.from("tools").insert({
       uid,
       tool_name: toolName,
@@ -1190,10 +1295,11 @@ function App() {
       availability_reason: newTool.status === "Available" ? null : newTool.status,
       current_borrower: null,
       workshop: workshopName,
-      image_url: newTool.imageUrl || null
+      image_url: imageRef
     });
 
     if (insertError) {
+      if (imageRef) await removeStoredToolImage(imageRef);
       setInventoryMessage(insertError.message);
       setSavingTool(false);
       return;
@@ -1204,7 +1310,8 @@ function App() {
       toolName: "",
       toolCode: "",
       status: "Available",
-      imageUrl: ""
+      imageUrl: "",
+      imageFile: null
     });
     setInventoryMessage(`${toolName} ${toolCode} added.`);
     setSavingTool(false);
@@ -1242,6 +1349,7 @@ function App() {
       return;
     }
 
+    await removeStoredToolImage(tool.image_url);
     setInventoryMessage(`${tool.tool_name} ${tool.tool_code} deleted.`);
     setDeletingUid("");
     await loadData();
@@ -1255,7 +1363,8 @@ function App() {
       toolName: tool.tool_name,
       toolCode: tool.tool_code,
       status: tool.status,
-      imageUrl: tool.image_url || ""
+      imageUrl: tool.image_url || "",
+      imageFile: null
     });
   }
 
@@ -1304,6 +1413,18 @@ function App() {
     setSavingEdit(true);
     setEditMessage("Saving changes...");
 
+    let uploadedImagePath = null;
+    if (editTool.imageFile) {
+      setEditMessage("Uploading tool photo...");
+      try {
+        uploadedImagePath = await uploadToolImage(editTool.imageFile, uid);
+      } catch (error) {
+        setEditMessage(`Photo upload failed: ${error.message}`);
+        setSavingEdit(false);
+        return;
+      }
+    }
+
     const { error: updateError } = await supabase
       .from("tools")
       .update({
@@ -1313,14 +1434,19 @@ function App() {
         status,
         availability_reason: status === "Available" ? null : status,
         workshop: workshopName,
-        image_url: editTool.imageUrl || null
+        image_url: uploadedImagePath || editTool.imageUrl || null
       })
       .eq("uid", editTool.originalUid);
 
     if (updateError) {
+      if (uploadedImagePath) await removeStoredToolImage(uploadedImagePath);
       setEditMessage(updateError.message);
       setSavingEdit(false);
       return;
+    }
+
+    if (uploadedImagePath && editTool.imageUrl !== uploadedImagePath) {
+      await removeStoredToolImage(editTool.imageUrl);
     }
 
     setEditTool(null);
@@ -1365,6 +1491,8 @@ function App() {
         <InventoryManager
           deletingUid={deletingUid}
           inventoryMessage={inventoryMessage}
+          legacyPhotoCount={inventory.filter((tool) => String(tool.image_url || "").startsWith("data:image/")).length}
+          migratingPhotos={migratingPhotos}
           masterScanActive={masterScanActive}
           masterScanBusy={masterScanBusy}
           newTool={newTool}
@@ -1376,6 +1504,7 @@ function App() {
           onStartMasterScan={startMasterScan}
           onStopMasterScan={stopMasterScan}
           onSelectImage={(file) => handleToolImageFile("new", file)}
+          onMigratePhotos={migrateExistingToolPhotos}
           onUpdateNewTool={updateNewToolField}
           rows={inventory}
           savingTool={savingTool}
@@ -2255,10 +2384,54 @@ function MiniStat({ label, value }) {
   );
 }
 
+function useToolImageSource(imageRef) {
+  const [source, setSource] = useState(() => (isDirectImageUrl(imageRef) ? imageRef : ""));
+
+  useEffect(() => {
+    let active = true;
+    let refreshTimer;
+
+    if (isDirectImageUrl(imageRef)) {
+      setSource(imageRef);
+      return undefined;
+    }
+    if (!imageRef) {
+      setSource("");
+      return undefined;
+    }
+
+    async function resolveSource(forceRefresh = false) {
+      try {
+        const resolved = await getToolImageUrl(imageRef, forceRefresh);
+        if (!active) return;
+        setSource(resolved);
+        refreshTimer = window.setTimeout(() => resolveSource(true), 50 * 60 * 1000);
+      } catch {
+        if (active) setSource("");
+      }
+    }
+
+    setSource("");
+    resolveSource();
+    return () => {
+      active = false;
+      window.clearTimeout(refreshTimer);
+    };
+  }, [imageRef]);
+
+  return source;
+}
+
+function ToolPhotoImage({ alt, imageUrl }) {
+  const source = useToolImageSource(imageUrl);
+  return source ? <img src={source} alt={alt} /> : null;
+}
+
 function ToolThumbnail({ imageUrl, name, size = "normal" }) {
+  const source = useToolImageSource(imageUrl);
   return (
     <div className={`tool-thumbnail ${size}`} aria-hidden="true">
-      {imageUrl ? <img alt="" src={imageUrl} /> : <Wrench size={size === "small" ? 15 : 20} />}
+      {source ? <img alt="" src={source} /> : <Wrench size={size === "small" ? 15 : 20} />}
     </div>
   );
 }
@@ -2346,6 +2519,8 @@ function InventoryTable({ availabilityFilter, inventorySearch, onAvailabilityFil
 function InventoryManager({
   deletingUid,
   inventoryMessage,
+  legacyPhotoCount,
+  migratingPhotos,
   masterScanActive,
   masterScanBusy,
   newTool,
@@ -2357,6 +2532,7 @@ function InventoryManager({
   onStartMasterScan,
   onStopMasterScan,
   onSelectImage,
+  onMigratePhotos,
   onUpdateNewTool,
   rows,
   savingTool
@@ -2370,6 +2546,15 @@ function InventoryManager({
           <p>Maintain registered tools, real NFC UIDs, and workshop tool codes.</p>
         </div>
       </div>
+
+      {legacyPhotoCount > 0 && (
+        <div className="image-preview">
+          <span>{legacyPhotoCount} existing photo(s) are still stored in the database.</span>
+          <button className="secondary-button" disabled={migratingPhotos} onClick={onMigratePhotos} type="button">
+            {migratingPhotos ? "Moving photos..." : "Move existing photos to Storage"}
+          </button>
+        </div>
+      )}
 
       <form className="inventory-form" onSubmit={onAddTool}>
         <label>
@@ -2824,7 +3009,7 @@ function ToolDetailModal({ historyRows, loading, onClose, overdue, tool }) {
             <button className="modal-close tool-photo-lightbox-close" onClick={() => setImageOpen(false)} type="button" aria-label="Close enlarged photo">
               <X size={20} />
             </button>
-            <img src={tool.image_url} alt={`${tool.tool_name} (${tool.tool_code})`} />
+            <ToolPhotoImage imageUrl={tool.image_url} alt={`${tool.tool_name} (${tool.tool_code})`} />
             <p>{tool.tool_name} · {tool.tool_code}</p>
           </section>
         </div>
