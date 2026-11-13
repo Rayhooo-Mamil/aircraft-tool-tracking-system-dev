@@ -214,6 +214,8 @@ function App() {
   const processedScanIdsRef = useRef(processedScanIds);
   const scannerActiveRef = useRef(scannerActive);
   const scanBusyRef = useRef(scanBusy);
+  const masterScanBusyRef = useRef(false);
+  const masterScanGenerationRef = useRef(0);
 
   const totalTools = inventory.length;
   const serviceableTools = inventory.filter((tool) => tool.status !== "Unserviceable");
@@ -836,30 +838,44 @@ function App() {
   }
 
   async function pollMasterScanEvent() {
-    if (!masterScanActive || masterScanBusy || !supabaseConfigured || !masterScanStartedAt) return;
-    setMasterScanBusy(true);
-    const { data: scanEvent, error: scanError } = await supabase
-      .from("scan_events")
-      .select("*")
-      .eq("consumed", false)
-      .gte("created_at", masterScanStartedAt)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    if (!masterScanActive || !supabaseConfigured || !masterScanStartedAt || masterScanBusyRef.current) return;
 
-    if (scanError) {
-      setInventoryMessage(`Scanner error: ${scanError.message}`);
-      setMasterScanActive(false);
-    } else if (scanEvent?.uid) {
-      const uid = String(scanEvent.uid).trim().toUpperCase();
-      setNewTool((current) => ({ ...current, uid }));
-      setInventoryMessage(`UID ${uid} scanned. Complete the tool name, code, and status, then click Add Tool.`);
-      await markScanConsumed(scanEvent.id);
-      setMasterScanActive(false);
-      setMasterScanStartedAt(null);
-      pushToast("success", `UID ${uid} added to the registration form.`);
+    const scanGeneration = masterScanGenerationRef.current;
+    masterScanBusyRef.current = true;
+    setMasterScanBusy(true);
+
+    try {
+      const { data: scanEvent, error: scanError } = await supabase
+        .from("scan_events")
+        .select("*")
+        .eq("consumed", false)
+        .gt("created_at", masterScanStartedAt)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (scanGeneration !== masterScanGenerationRef.current) return;
+
+      if (scanError) {
+        setInventoryMessage(`Scanner error: ${scanError.message}`);
+        setMasterScanActive(false);
+        setMasterScanStartedAt(null);
+      } else if (scanEvent?.uid) {
+        const uid = String(scanEvent.uid).trim().toUpperCase();
+        setNewTool((current) => ({ ...current, uid }));
+        setInventoryMessage(`UID ${uid} scanned. Complete the tool name, code, and status, then click Add Tool.`);
+        await markScanConsumed(scanEvent.id);
+        if (scanGeneration === masterScanGenerationRef.current) {
+          masterScanGenerationRef.current += 1;
+          setMasterScanActive(false);
+          setMasterScanStartedAt(null);
+          pushToast("success", `UID ${uid} added to the registration form.`);
+        }
+      }
+    } finally {
+      masterScanBusyRef.current = false;
+      setMasterScanBusy(false);
     }
-    setMasterScanBusy(false);
   }
 
   function startScanning() {
@@ -878,15 +894,30 @@ function App() {
     pushToast("success", "Scanner started.");
   }
 
-  function startMasterScan() {
+  async function startMasterScan() {
     if (!supabaseConfigured) return setInventoryMessage("Connect Supabase before scanning a new UID.");
     if (scannerActive) return setInventoryMessage("Stop the checkout scanner before scanning a new Master Data UID.");
-    setMasterScanStartedAt(new Date().toISOString());
+
+    const { data: latestEvent, error: checkpointError } = await supabase
+      .from("scan_events")
+      .select("created_at")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (checkpointError) {
+      setInventoryMessage(`Unable to start UID scan: ${checkpointError.message}`);
+      return;
+    }
+
+    masterScanGenerationRef.current += 1;
+    setMasterScanStartedAt(latestEvent?.created_at || "1970-01-01T00:00:00.000Z");
     setMasterScanActive(true);
     setInventoryMessage("Waiting for a new NFC UID. Tap the tag on PN532 now.");
   }
 
   function stopMasterScan() {
+    masterScanGenerationRef.current += 1;
     setMasterScanActive(false);
     setMasterScanStartedAt(null);
     setMasterScanBusy(false);
