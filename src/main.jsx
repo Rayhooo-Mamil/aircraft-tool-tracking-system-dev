@@ -2537,6 +2537,11 @@ function InventoryManager({
   rows,
   savingTool
 }) {
+  const [activeList, setActiveList] = useState("tools");
+  const toolsRows = rows.filter((tool) => tool.status !== "Unserviceable");
+  const unserviceableRows = rows.filter((tool) => tool.status === "Unserviceable");
+  const visibleRows = activeList === "unserviceable" ? unserviceableRows : toolsRows;
+
   return (
     <section className="table-card page-panel">
       <div className="section-heading">
@@ -2609,6 +2614,27 @@ function InventoryManager({
       {inventoryMessage && <p className="helper-text">{inventoryMessage}</p>}
       {newTool.imageUrl && <div className="image-preview"><ToolThumbnail imageUrl={newTool.imageUrl} name={newTool.toolName} /><span>Photo selected for this new tool</span></div>}
 
+      <div className="tabs" role="tablist" aria-label="Inventory lists">
+        <button
+          aria-selected={activeList === "tools"}
+          className={`tab ${activeList === "tools" ? "active" : ""}`}
+          onClick={() => setActiveList("tools")}
+          role="tab"
+          type="button"
+        >
+          Tools ({toolsRows.length})
+        </button>
+        <button
+          aria-selected={activeList === "unserviceable"}
+          className={`tab ${activeList === "unserviceable" ? "active" : ""}`}
+          onClick={() => setActiveList("unserviceable")}
+          role="tab"
+          type="button"
+        >
+          Unserviceable ({unserviceableRows.length})
+        </button>
+      </div>
+
       <div className="table-wrap">
         <table>
           <thead>
@@ -2621,7 +2647,7 @@ function InventoryManager({
             </tr>
           </thead>
           <tbody>
-            {rows.map((tool) => (
+            {visibleRows.map((tool) => (
               <tr key={`manage-${tool.uid}`}>
                 <td><button className="tool-cell tool-link" onClick={() => onOpenTool(tool)} type="button"><ToolThumbnail imageUrl={tool.image_url} name={tool.tool_name} size="small" />{tool.tool_name}</button></td>
                 <td>{tool.tool_code}</td>
@@ -2650,7 +2676,16 @@ function InventoryManager({
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td className="empty-cell" colSpan="5"><EmptyState message="No master-data tools yet." factIndex={1} /></td></tr>}
+            {visibleRows.length === 0 && (
+              <tr>
+                <td className="empty-cell" colSpan="5">
+                  <EmptyState
+                    message={activeList === "unserviceable" ? "No unserviceable tools." : "No tools have been registered yet."}
+                    factIndex={1}
+                  />
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
